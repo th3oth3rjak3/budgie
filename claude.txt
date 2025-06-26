@@ -1,0 +1,340 @@
+use sqlx::{FromRow, SqlitePool, Transaction, Sqlite};
+use serde::{Deserialize, Serialize};
+use chrono::NaiveDateTime;
+use std::collections::HashMap;
+
+// Database row struct - maps directly to table
+#[derive(Debug, FromRow)]
+struct BudgetRow {
+    pub id: i64,
+    pub name: String,
+    pub version: i64,
+    pub created_at: NaiveDateTime,
+}
+
+// Domain struct - what your app actually uses
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Budget {
+    pub id: i64,
+    pub name: String,
+    pub version: i64,
+    pub created_at: NaiveDateTime,
+    pub categories: Vec<BudgetCategory>,
+}
+
+// Database row struct
+#[derive(Debug, FromRow)]
+struct BudgetCategoryRow {
+    pub id: i64,
+    pub budget_id: i64,
+    pub name: String,
+}
+
+// Domain struct
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BudgetCategory {
+    pub id: i64,
+    pub budget_id: i64,
+    pub name: String,
+    pub entries: Vec<BudgetEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct BudgetEntry {
+    pub id: i64,
+    pub category_id: i64,
+    pub amount_cents: i64,
+    pub month: i32,     // Changed to i32 for better sqlx compatibility
+    pub year: i32,
+    pub created_at: NaiveDateTime,
+}
+
+// Separate struct for the joined query results
+#[derive(Debug, FromRow)]
+struct CategoryWithEntry {
+    // Category fields
+    category_id: i64,
+    category_name: String,
+
+    // Entry fields (nullable due to LEFT JOIN)
+    entry_id: Option<i64>,
+    amount_cents: Option<i64>,
+    month: Option<i32>,
+    year: Option<i32>,
+    entry_created_at: Option<NaiveDateTime>,
+}
+
+#[derive(Debug)]
+pub enum BudgetError {
+    NotFound,
+    VersionConflict,
+    CategoryNotFound,
+    InvalidPeriod,
+    DatabaseError(sqlx::Error),
+}
+
+impl Budget {
+    pub async fn get_by_id_with_categories(
+        pool: &SqlitePool,
+        id: i64
+    ) -> Result<Option<Budget>, sqlx::Error> {
+        // Get the budget - compile-time checked!
+        let budget_row = sqlx::query_as!(
+            BudgetRow,
+            "SELECT id, name, version, created_at FROM budgets WHERE id = ?",
+            id
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        let budget_row = match budget_row {
+            Some(row) => row,
+            None => return Ok(None),
+        };
+
+        // Get categories with their entries - compile-time checked!
+        let category_rows = sqlx::query_as!(
+            CategoryWithEntry,
+            "SELECT
+                c.id as category_id,
+                c.name as category_name,
+                e.id as entry_id,
+                e.amount_cents,
+                e.month,
+                e.year,
+                e.created_at as entry_created_at
+             FROM budget_categories c
+             LEFT JOIN budget_entries e ON c.id = e.category_id
+             WHERE c.budget_id = ?
+             ORDER BY c.name, e.year, e.month",
+            id
+        )
+        .fetch_all(pool)
+        .await?;
+
+        // Group entries by category
+        let mut categories_map: HashMap<i64, BudgetCategory> = HashMap::new();
+
+        for row in category_rows {
+            let category = categories_map.entry(row.category_id).or_insert_with(|| {
+                BudgetCategory {
+                    id: row.category_id,
+                    budget_id: id,
+                    name: row.category_name.clone(),
+                    entries: Vec::new(),
+                }
+            });
+
+            // Add entry if it exists (LEFT JOIN might have NULLs)
+            if let (Some(entry_id), Some(amount_cents), Some(month), Some(year), Some(created_at)) =
+                (row.entry_id, row.amount_cents, row.month, row.year, row.entry_created_at) {
+                category.entries.push(BudgetEntry {
+                    id: entry_id,
+                    category_id: row.category_id,
+                    amount_cents,
+                    month,
+                    year,
+                    created_at,
+                });
+            }
+        }
+
+        budget.categories = categories_map.into_values().collect();
+
+        // Convert database row to domain object
+        let budget = Budget {
+            id: budget_row.id,
+            name: budget_row.name,
+            version: budget_row.version,
+            created_at: budget_row.created_at,
+            categories: categories_map.into_values().collect(),
+        };
+
+        Ok(Some(budget))
+    }
+
+    // Add or update a budget entry for a specific category and month/year
+    pub async fn update_category_entry(
+        pool: &SqlitePool,
+        budget_id: i64,
+        category_name: &str,
+        amount_cents: i64,
+        month: i32,
+        year: i32,
+        expected_version: i64,
+    ) -> Result<Budget, BudgetError> {
+        let mut tx = pool.begin().await.map_err(BudgetError::DatabaseError)?;
+
+        // Check and increment budget version - compile-time checked!
+        let budget_update_result = sqlx::query!(
+            "UPDATE budgets SET version = version + 1 WHERE id = ? AND version = ?",
+            budget_id,
+            expected_version
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(BudgetError::DatabaseError)?;
+
+        if budget_update_result.rows_affected() == 0 {
+            return Self::handle_version_conflict(&mut tx, budget_id).await;
+        }
+
+        // Ensure category exists - compile-time checked!
+        let category_id = Self::ensure_category_exists(&mut tx, budget_id, category_name).await?;
+
+        // Check if entry exists for this month/year - compile-time checked!
+        let existing_entry = sqlx::query!(
+            "SELECT id FROM budget_entries
+             WHERE category_id = ? AND month = ? AND year = ?",
+            category_id,
+            month,
+            year
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(BudgetError::DatabaseError)?;
+
+        if let Some(entry) = existing_entry {
+            // Update existing entry - compile-time checked!
+            sqlx::query!(
+                "UPDATE budget_entries SET amount_cents = ? WHERE id = ?",
+                amount_cents,
+                entry.id
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(BudgetError::DatabaseError)?;
+        } else {
+            // Create new entry - compile-time checked!
+            sqlx::query!(
+                "INSERT INTO budget_entries (category_id, amount_cents, month, year)
+                 VALUES (?, ?, ?, ?)",
+                category_id,
+                amount_cents,
+                month,
+                year
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(BudgetError::DatabaseError)?;
+        }
+
+        tx.commit().await.map_err(BudgetError::DatabaseError)?;
+
+        // Return updated budget
+        Self::get_by_id_with_categories(pool, budget_id)
+            .await
+            .map_err(BudgetError::DatabaseError)?
+            .ok_or(BudgetError::NotFound)
+    }
+
+    async fn ensure_category_exists(
+        tx: &mut Transaction<'_, Sqlite>,
+        budget_id: i64,
+        category_name: &str,
+    ) -> Result<i64, BudgetError> {
+        // Try to get existing category - compile-time checked!
+        if let Some(category) = sqlx::query!(
+            "SELECT id FROM budget_categories WHERE budget_id = ? AND name = ?",
+            budget_id,
+            category_name
+        )
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(BudgetError::DatabaseError)?
+        {
+            return Ok(category.id);
+        }
+
+        // Create new category - compile-time checked!
+        let result = sqlx::query!(
+            "INSERT INTO budget_categories (budget_id, name) VALUES (?, ?) RETURNING id",
+            budget_id,
+            category_name
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(BudgetError::DatabaseError)?;
+
+        Ok(result.id)
+    }
+
+    async fn handle_version_conflict(
+        tx: &mut Transaction<'_, Sqlite>,
+        budget_id: i64,
+    ) -> Result<Budget, BudgetError> {
+        let exists = sqlx::query!(
+            "SELECT 1 as exists FROM budgets WHERE id = ?",
+            budget_id
+        )
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(BudgetError::DatabaseError)?;
+
+        if exists.is_some() {
+            Err(BudgetError::VersionConflict)
+        } else {
+            Err(BudgetError::NotFound)
+        }
+    }
+}
+
+// Example usage with compile-time safety
+pub async fn create_budget_example(pool: &SqlitePool) -> Result<(), BudgetError> {
+    // This will fail at compile time if the query is wrong!
+    let new_budget = sqlx::query!(
+        "INSERT INTO budgets (name) VALUES (?) RETURNING id, name, version, created_at",
+        "Monthly Budget 2025"
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(BudgetError::DatabaseError)?;
+
+    println!("Created budget with ID: {}", new_budget.id);
+    Ok(())
+}
+
+/*
+Setup instructions:
+
+1. Set environment variable:
+   export DATABASE_URL="sqlite:budget.db"
+
+2. Create your database and run migrations:
+   sqlx database create
+   sqlx migrate add initial_schema
+
+3. In your migration file:
+   CREATE TABLE budgets (
+       id INTEGER PRIMARY KEY,
+       name TEXT NOT NULL,
+       version INTEGER DEFAULT 1,
+       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+   );
+
+   CREATE TABLE budget_categories (
+       id INTEGER PRIMARY KEY,
+       budget_id INTEGER NOT NULL,
+       name TEXT NOT NULL,
+       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+       FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE,
+       UNIQUE(budget_id, name)
+   );
+
+   CREATE TABLE budget_entries (
+       id INTEGER PRIMARY KEY,
+       category_id INTEGER NOT NULL,
+       amount_cents INTEGER NOT NULL,
+       month INTEGER NOT NULL CHECK (month >= 1 AND month <= 12),
+       year INTEGER NOT NULL,
+       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+       FOREIGN KEY (category_id) REFERENCES budget_categories(id) ON DELETE CASCADE,
+       UNIQUE(category_id, month, year)
+   );
+
+4. Run migration:
+   sqlx migrate run
+
+5. Prepare sqlx for offline mode (optional but recommended for CI):
+   cargo sqlx prepare
+*/

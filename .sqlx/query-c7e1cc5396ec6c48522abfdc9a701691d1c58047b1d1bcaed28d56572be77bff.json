@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                        c.id as category_id,\n                        c.name as category_name,\n                        e.id as entry_id,\n                        e.amount_cents,\n                        e.month,\n                        e.year,\n                        e.created_at as entry_created_at\n                     FROM budget_categories c\n                     LEFT JOIN budget_entries e ON c.id = e.category_id\n                     WHERE c.budget_id = ?\n                     ORDER BY c.name, e.year, e.month",
+  "describe": {
+    "columns": [
+      {
+        "name": "category_id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "category_name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "entry_id",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "amount_cents",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "month",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "year",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "entry_created_at",
+        "ordinal": 6,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "c7e1cc5396ec6c48522abfdc9a701691d1c58047b1d1bcaed28d56572be77bff"
+}

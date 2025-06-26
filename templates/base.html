@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+    <head>
+        <title>{% block title %}Finance App{% endblock %}</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="stylesheet" href="/static/styles.css" />
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>Personal Finance</h1>
+                <nav>
+                    <a href="/">Dashboard</a>
+                    <a href="/transactions">Transactions</a>
+                    <a href="/budget">Budget</a>
+                    <a href="/upload">Import</a>
+                    <a href="/accounts">Accounts</a>
+                </nav>
+            </header>
+
+            <main>{% block content %}{% endblock %}</main>
+        </div>
+    </body>
+</html>

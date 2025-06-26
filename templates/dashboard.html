@@ -1,0 +1,66 @@
+{% extends "base.html" %} {% block title %}Dashboard - Finance App{% endblock %}
+{% block content %}
+<div class="dashboard">
+    <div class="card">
+        <h2>Account Balances</h2>
+        <div class="balance">$2,847.32</div>
+        <div>Checking Account</div>
+        <div class="balance">$1,234.56</div>
+        <div>Savings Account</div>
+    </div>
+
+    <div class="card">
+        <h2>This Month</h2>
+        <div class="balance negative">-$1,247.83</div>
+        <div>Total Spending</div>
+        <div class="balance">$3,200.00</div>
+        <div>Budget Remaining</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Recent Transactions</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Description</th>
+                <th>Category</th>
+                <th>Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>2024-06-24</td>
+                <td>Grocery Store</td>
+                <td>Food</td>
+                <td class="amount negative">-$67.45</td>
+            </tr>
+            <tr>
+                <td>2024-06-23</td>
+                <td>Salary Deposit</td>
+                <td>Income</td>
+                <td class="amount positive">+$2,500.00</td>
+            </tr>
+            <tr>
+                <td>2024-06-22</td>
+                <td>Gas Station</td>
+                <td>Transportation</td>
+                <td class="amount negative">-$45.20</td>
+            </tr>
+            <tr>
+                <td>2024-06-21</td>
+                <td>Coffee Shop</td>
+                <td>Food</td>
+                <td class="amount negative">-$4.75</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="actions">
+    <a href="/upload" class="btn btn-primary">Import Transactions</a>
+    <a href="/transactions/new" class="btn">Add Transaction</a>
+    <a href="/budget" class="btn">View Budget</a>
+</div>
+{% endblock %}
